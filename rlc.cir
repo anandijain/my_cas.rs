@@ -1,0 +1,12 @@
+* Series RLC circuit
+V1 1 0 SIN(0 1 1kHz) ; AC source of 1V amplitude and 1kHz frequency
+R1 1 2 1k ; 1k Ohm resistor
+L1 2 3 10m ; 10mH inductor
+C1 3 0 1u ; 1uF capacitor
+
+.control
+tran 1ms 5ms ; Transient analysis for 5ms with 1ms time step
+plot v(1) v(3) ; Plot voltage across the source and the capacitor
+.endc
+
+.end
