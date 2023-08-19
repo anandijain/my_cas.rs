@@ -4,4 +4,4 @@ pub extern "C" fn my_ode_function(t: f64, y: &[f64; 1], ydot: &mut [f64; 1], p: 
     for x in 0..y.len() {
         ydot[x] = d[x];
     }
-    }
+}

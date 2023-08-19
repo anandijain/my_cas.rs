@@ -2,8 +2,10 @@ use cvode_wrap::{AbsTolerance, LinearMultistepMethod, RhsResult, SolverNoSensi, 
 use libloading::{Library, Symbol};
 use ndarray;
 use std::collections::HashMap;
+use std::ffi::c_void;
 use std::fs;
 use std::process::Command;
+use sundials_sys::*;
 
 #[derive(Debug, Clone)]
 enum Ex {
@@ -89,6 +91,8 @@ fn generate_function_from_system(system: &ODESystem) -> String {
     }
 
     let param_count = par_mapping.len();
+    println!("var_mapping: {:?}", var_mapping);
+    println!("par_mapping: {:?}", par_mapping);
 
     let mut result = format!(
         "#[no_mangle]\npub extern \"C\" fn my_ode_function(t: f64, y: &[f64; {}], ydot: &mut [f64; {}], p: &[f64; {}]) -> () {{\n",
@@ -106,7 +110,7 @@ fn generate_function_from_system(system: &ODESystem) -> String {
     result += "];\n";
 
     result += "    for x in 0..y.len() {\n        ydot[x] = d[x];\n    }\n";
-    result += "    }";
+    result += "}";
     result
 }
 
@@ -136,7 +140,47 @@ fn extract_initial_conditions_and_parameters(system: &ODESystem) -> (Vec<f64>, V
     (y0, p)
 }
 
+fn simple_ode() {
+    unsafe extern "C" fn rhs(
+        _t: realtype,
+        y: N_Vector,
+        dy: N_Vector,
+        _user_data: *mut c_void,
+    ) -> i32 {
+        *N_VGetArrayPointer(dy) = -*N_VGetArrayPointer(y);
+        0
+    }
+
+    unsafe {
+        let y = N_VNew_Serial(1);
+        *N_VGetArrayPointer(y) = 1.0;
+
+        let mut cvode_mem = CVodeCreate(CV_ADAMS);
+
+        CVodeInit(cvode_mem, Some(rhs), 0.0, y);
+        CVodeSStolerances(cvode_mem, 1e-6, 1e-8);
+
+        let matrix = SUNDenseMatrix(1, 1);
+        let solver = SUNDenseLinearSolver(y, matrix);
+
+        CVodeSetLinearSolver(cvode_mem, solver, matrix);
+        CVodeSetInitStep(cvode_mem, 0.1);
+        let mut t = 0f64;
+        CVode(cvode_mem, 1.0, y, &mut t, CV_NORMAL);
+        // y[0] is now exp(-1)
+
+        let result = (*N_VGetArrayPointer(y) * 1e6) as i32;
+        assert_eq!(result, 367879);
+
+        N_VDestroy(y);
+        CVodeFree(&mut cvode_mem);
+        SUNLinSolFree(solver);
+        SUNMatDestroy(matrix);
+    }
+}
+
 fn main() {
+    simple_ode();
     // Define sigma, rho, and beta parameters
 
     let sig = Ex::Par("sigma".to_string());
@@ -151,7 +195,7 @@ fn main() {
     let dx_dt = ODE {
         variable: "x".to_string(),
         expression: Ex::Mul(
-            Box::new(sig),
+            Box::new(sig.clone()),
             Box::new(Ex::Add(
                 Box::new(y.clone()),
                 Box::new(Ex::Mul(Box::new(Ex::Const(-1.)), Box::new(x.clone()))),
@@ -165,7 +209,7 @@ fn main() {
             Box::new(Ex::Mul(
                 Box::new(x.clone()),
                 Box::new(Ex::Add(
-                    Box::new(rh),
+                    Box::new(rh.clone()),
                     Box::new(Ex::Mul(Box::new(Ex::Const(-1.)), Box::new(z.clone()))),
                 )),
             )),
@@ -176,8 +220,11 @@ fn main() {
     let dz_dt = ODE {
         variable: "z".to_string(),
         expression: Ex::Add(
-            Box::new(Ex::Mul(Box::new(x), Box::new(y.clone()))),
-            Box::new(Ex::Mul(Box::new(bet), Box::new(z.clone()))),
+            Box::new(Ex::Mul(Box::new(x.clone()), Box::new(y.clone()))),
+            Box::new(Ex::Mul(
+                Box::new(Ex::Mul(Box::new(bet.clone()), Box::new(z.clone()))),
+                Box::new(Ex::Const(-1.)),
+            )),
         ),
     };
 
@@ -237,21 +284,22 @@ fn main() {
             },
             0.0,
             &y0,
-            1e-4,
-            AbsTolerance::scalar(1e-4),
+            1e-8,
+            AbsTolerance::scalar(1e-8),
             p,
         )
         .unwrap();
 
-        let ts = ndarray::Array::linspace(1.0, 10.0, 10000);
+        let ts = ndarray::Array::linspace(0.1, 10.0, 10000);
         println!("0,{:?}", y0);
         for &t in &ts {
             let step = solver.step(t as _, StepKind::Normal).unwrap();
             // let (_tret, &[x, xdot, z]) =
-            println!("{},{:?}", step.0, step.1);
+            // println!("{},{:?}", step.0, step.1);
         }
     }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -318,7 +366,7 @@ mod tests {
             )
             .unwrap();
 
-            let ts = ndarray::Array::linspace(0.0, 10.0, 100);
+            let ts = ndarray::Array::linspace(1.0, 10.0, 100);
             for &t in &ts {
                 let step = solver.step(t as _, StepKind::Normal).unwrap();
                 println!("{:?}", step);
