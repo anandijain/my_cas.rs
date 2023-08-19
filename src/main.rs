@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::fs;
 use std::process::Command;
+use std::thread::sleep;
+use std::time::{Duration, Instant};
 use sundials_sys::*;
 
 #[derive(Debug, Clone)]
@@ -290,14 +292,47 @@ fn main() {
         )
         .unwrap();
 
-        let ts = ndarray::Array::linspace(0.1, 10.0, 10000);
+        let ts = ndarray::Array::linspace(0.1, 10.0, 100);
         println!("0,{:?}", y0);
-        for &t in &ts {
-            let step = solver.step(t as _, StepKind::Normal).unwrap();
-            // let (_tret, &[x, xdot, z]) =
-            // println!("{},{:?}", step.0, step.1);
-        }
+        let mut t = 0.1;
+        let mut last_time = Instant::now();
+        let mut steps = 0;
+        let mut seconds = 0; // Keep track of how many seconds have passed
+        
+        const N: usize = 200_000; // Adjust based on expected speed
+        
+        let start_time = Instant::now();
+
+        // loop {
+            for _ in 0..N {
+                let step = solver.step(t as _, StepKind::Normal).unwrap();
+                // println!("{:?}", step);
+                t += 0.1;
+            }
+            let elapsed = start_time.elapsed().as_secs_f64();
+            let steps_per_second = N as f64 / elapsed;
+            println!("Steps per second: {}", steps_per_second);
+            // Steps per second: 93171.21751431652
+            // steps += 1;
+            
+        // if last_time.elapsed() >= Duration::new(1, 0) {
+        //     // Check if a second has passed
+        //     println!("Steps per second: {}", steps);
+        //     steps = 0;
+        //     last_time = Instant::now();
+        //     seconds += 1;
+        // }
+
+        // // Optional: You may also want to break out of the loop after a certain number of seconds
+        // if seconds >= 1 {
+        //     break;
+        // }
     }
+
+    // for &t in &ts {
+    // let (_tret, &[x, xdot, z]) =
+    // }
+    // }
 }
 
 #[cfg(test)]
