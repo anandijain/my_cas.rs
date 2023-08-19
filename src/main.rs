@@ -312,7 +312,8 @@ fn main() {
             let elapsed = start_time.elapsed().as_secs_f64();
             let steps_per_second = N as f64 / elapsed;
             println!("Steps per second: {}", steps_per_second);
-            // Steps per second: 93171.21751431652
+            // Steps per second: 93171.21751431652 with --release
+            // Steps per second: 27414.59077180507 without
             // steps += 1;
             
         // if last_time.elapsed() >= Duration::new(1, 0) {
