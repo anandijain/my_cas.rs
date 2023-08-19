@@ -1,6 +1,8 @@
 use cvode_wrap::{AbsTolerance, LinearMultistepMethod, RhsResult, SolverNoSensi, StepKind};
 use libloading::{Library, Symbol};
 use ndarray;
+use serde::{Deserialize, Serialize};
+use serde_json;
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::fs;
@@ -9,23 +11,45 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 use sundials_sys::*;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 enum Ex {
     Const(f64),
-    Var(String), // implicity dependence on time
+    Var(String), // implicitly dependence on time
     Par(String), // independent of t
     Mul(Box<Ex>, Box<Ex>),
     Add(Box<Ex>, Box<Ex>),
     Pow(Box<Ex>, Box<Ex>),
+    Der(Box<Ex>), // Represents differentiation wrt time
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
+enum EquationType {
+    ODE { order: usize }, // order represents the highest order of differentiation in the equation.
+    AE,                   // Algebraic Equation
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct Equation {
+    variable: String, // the primary variable of the equation (e.g., x, y, etc.)
+    expression: Ex,
+    eq_type: EquationType,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct System {
+    equations: Vec<Equation>,
+    defaults: Vec<(String, f64)>,
+    tspan: (f64, f64),
+}
+
+/// ODE and ODEsystem are old
+#[derive(Debug, Clone, Deserialize, Serialize)]
 struct ODE {
     variable: String,
     expression: Ex,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 struct ODESystem {
     odes: Vec<ODE>,
     defaults: Vec<(String, f64)>,
@@ -72,6 +96,7 @@ fn translate_expression_to_code(
             translate_expression_to_code(a, var_mapping, par_mapping),
             translate_expression_to_code(b, var_mapping, par_mapping)
         ),
+        _ => "".to_string(),
     }
 }
 
@@ -142,6 +167,40 @@ fn extract_initial_conditions_and_parameters(system: &ODESystem) -> (Vec<f64>, V
     (y0, p)
 }
 
+fn transform_to_first_order(system: &System) -> System {
+    let mut new_equations = Vec::new();
+    let mut new_defaults = system.defaults.clone();
+
+    for equation in &system.equations {
+        match &equation.eq_type {
+            EquationType::ODE { order } if *order > 1 => {
+                let mut current_var = equation.variable.clone();
+                let mut current_expr = equation.expression.clone();
+
+                for _ in 1..=*order {
+                    let new_var = format!("d_{}", current_var); // new variable name like "d_x", "d_dx", etc.
+                    let new_eq = Equation {
+                        variable: new_var.clone(),
+                        expression: current_expr.clone(),
+                        eq_type: EquationType::ODE { order: 1 },
+                    };
+                    new_equations.push(new_eq);
+                    new_defaults.push((new_var.clone(), 0.0)); // setting default initial condition for new variable
+                    current_var = new_var;
+                    current_expr = Ex::Var(current_var.clone());
+                }
+            }
+            _ => new_equations.push(equation.clone()), // Any other type of equation remains unchanged
+        }
+    }
+
+    System {
+        equations: new_equations,
+        defaults: new_defaults,
+        tspan: system.tspan,
+    }
+}
+
 fn simple_ode() {
     unsafe extern "C" fn rhs(
         _t: realtype,
@@ -181,10 +240,63 @@ fn simple_ode() {
     }
 }
 
-fn main() {
-    simple_ode();
-    // Define sigma, rho, and beta parameters
+fn pendulum_sys() -> System {
+    let x = Ex::Var("x".to_string());
+    let y = Ex::Var("y".to_string());
+    let dx = Ex::Var("dx".to_string());
+    let dy = Ex::Var("dy".to_string());
+    let g = Ex::Par("g".to_string());
+    let L = Ex::Par("L".to_string());
+    let T = Ex::Par("T".to_string());
 
+    // Second-order ODE for x (d^2x/dt^2 = T*x)
+    let d2x_dt2 = Equation {
+        variable: "dx".to_string(),
+        expression: Ex::Mul(Box::new(T.clone()), Box::new(x.clone())),
+        eq_type: EquationType::ODE { order: 2 },
+    };
+
+    // Second-order ODE for y (d^2y/dt^2 = T*y - g)
+    let d2y_dt2 = Equation {
+        variable: "dy".to_string(),
+        expression: Ex::Add(
+            Box::new(Ex::Mul(Box::new(T.clone()), Box::new(y.clone()))),
+            Box::new(Ex::Mul(Box::new(Ex::Const(-1.)), Box::new(g))),
+        ),
+        eq_type: EquationType::ODE { order: 2 },
+    };
+
+    // Constraint for the pendulum length
+    let constraint = Equation {
+        variable: "constraint".to_string(),
+        expression: Ex::Add(
+            Box::new(Ex::Pow(Box::new(x), Box::new(Ex::Const(2.0)))),
+            Box::new(Ex::Add(
+                Box::new(Ex::Pow(Box::new(y), Box::new(Ex::Const(2.0)))),
+                Box::new(Ex::Mul(Box::new(Ex::Const(-1.)), Box::new(L))),
+            )),
+        ),
+        eq_type: EquationType::AE,
+    };
+
+    // Construct the system
+    let pendulum_system = System {
+        equations: vec![d2x_dt2, d2y_dt2, constraint],
+        defaults: vec![
+            ("x".to_string(), 0.0),
+            ("y".to_string(), 1.0),
+            ("dx".to_string(), 0.0),
+            ("dy".to_string(), 0.0),
+            ("g".to_string(), 9.81),
+            ("L".to_string(), 1.0),
+            ("T".to_string(), 0.0), // Tension is not defined initially
+        ],
+        tspan: (0.0, 10.0),
+    };
+    pendulum_system
+}
+
+fn lorenz_sys() -> (ODESystem, [f64; 3], [f64; 3]) {
     let sig = Ex::Par("sigma".to_string());
     let rh = Ex::Par("rho".to_string());
     let bet = Ex::Par("beta".to_string());
@@ -256,7 +368,13 @@ fn main() {
     let p: [f64; 3] = [p_vec[0], p_vec[1], p_vec[2]]; // As an example for size 3
 
     println!("{:?}", lorenz_sys);
+    (lorenz_sys, y0, p)
+}
 
+fn solve_lorenz() {
+    simple_ode();
+    // Define sigma, rho, and beta parameters
+    let (lorenz_sys, y0, p) = lorenz_sys();
     let code = generate_function_from_system(&lorenz_sys);
 
     fs::write("generated_code.rs", code).expect("Unable to write file");
@@ -268,16 +386,11 @@ fn main() {
         .status()
         .expect("Failed to compile");
 
-    // Load the shared library
-
-    // Load the function from the library
     unsafe {
         let lib = Library::new("libgenerated_code.dylib").expect("Failed to load the library");
         let func: Symbol<extern "C" fn(f64, &[f64; 3], &mut [f64; 3], &[f64; 3]) -> i32> =
             lib.get(b"my_ode_function").expect("Function not found");
-        // Here you'd call the function with appropriate arguments
 
-        //initialize the solver
         let mut solver = SolverNoSensi::new(
             LinearMultistepMethod::Adams,
             |t, y, ydot, k| {
@@ -298,42 +411,30 @@ fn main() {
         let mut last_time = Instant::now();
         let mut steps = 0;
         let mut seconds = 0; // Keep track of how many seconds have passed
-        
+
         const N: usize = 200_000; // Adjust based on expected speed
-        
+
         let start_time = Instant::now();
 
-        // loop {
-            for _ in 0..N {
-                let step = solver.step(t as _, StepKind::Normal).unwrap();
-                // println!("{:?}", step);
-                t += 0.1;
-            }
-            let elapsed = start_time.elapsed().as_secs_f64();
-            let steps_per_second = N as f64 / elapsed;
-            println!("Steps per second: {}", steps_per_second);
-            // Steps per second: 93171.21751431652 with --release
-            // Steps per second: 27414.59077180507 without
-            // steps += 1;
-            
-        // if last_time.elapsed() >= Duration::new(1, 0) {
-        //     // Check if a second has passed
-        //     println!("Steps per second: {}", steps);
-        //     steps = 0;
-        //     last_time = Instant::now();
-        //     seconds += 1;
+        // for _ in 0..N {
+        //     let step = solver.step(t as _, StepKind::Normal).unwrap();
+        //     // println!("{:?}", step);
+        //     t += 0.1;
         // }
-
-        // // Optional: You may also want to break out of the loop after a certain number of seconds
-        // if seconds >= 1 {
-        //     break;
-        // }
+        // let elapsed = start_time.elapsed().as_secs_f64();
+        // let steps_per_second = N as f64 / elapsed;
+        // println!("Steps per second: {}", steps_per_second);
+        // Steps per second: 93171.21751431652 with --release
+        // Steps per second: 27414.59077180507 without
     }
-
-    // for &t in &ts {
-    // let (_tret, &[x, xdot, z]) =
-    // }
-    // }
+}
+fn main() {
+    let sys = pendulum_sys();
+    println!("{:#?}", sys);
+    println!("{}", sys.equations.len());
+    let transformed_sys = transform_to_first_order(&sys);
+    println!("{:#?}", transformed_sys);
+    println!("{}", transformed_sys.equations.len());
 }
 
 #[cfg(test)]
