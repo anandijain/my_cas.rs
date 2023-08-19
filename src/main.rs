@@ -1,5 +1,6 @@
 use cvode_wrap::{AbsTolerance, LinearMultistepMethod, RhsResult, SolverNoSensi, StepKind};
 use libloading::{Library, Symbol};
+use ndarray;
 use std::collections::HashMap;
 use std::fs;
 use std::process::Command;
@@ -23,7 +24,7 @@ struct ODE {
 #[derive(Debug, Clone)]
 struct ODESystem {
     odes: Vec<ODE>,
-    defaults: HashMap<String, f64>,
+    defaults: Vec<(String, f64)>,
     tspan: (f64, f64),
 }
 
@@ -109,11 +110,34 @@ fn generate_function_from_system(system: &ODESystem) -> String {
     result
 }
 
+fn extract_initial_conditions_and_parameters(system: &ODESystem) -> (Vec<f64>, Vec<f64>) {
+    // Extract y0 from the system
+    let y0: Vec<f64> = system
+        .odes
+        .iter()
+        .map(|ode| {
+            system
+                .defaults
+                .iter()
+                .find(|&&(ref var, _)| *var == ode.variable)
+                .map(|&(_, value)| value)
+                .unwrap() // Default to 0.0 if not found (or panic if you prefer)
+        })
+        .collect();
+
+    // Extract parameters from the system
+    let p: Vec<f64> = system
+        .defaults
+        .iter()
+        .filter(|&&(ref var, _)| !system.odes.iter().any(|ode| ode.variable == *var))
+        .map(|&(_, value)| value)
+        .collect();
+
+    (y0, p)
+}
+
 fn main() {
     // Define sigma, rho, and beta parameters
-    let sigma = 10.0;
-    let rho = 28.0;
-    let beta = 8.0 / 3.0;
 
     let sig = Ex::Par("sigma".to_string());
     let rh = Ex::Par("rho".to_string());
@@ -157,14 +181,19 @@ fn main() {
         ),
     };
 
+    let sigma = 10.0;
+    let rho = 28.0;
+    let beta = 8.0 / 3.0;
+
     // Default values and parameters
-    let mut defaults = HashMap::new();
-    defaults.insert("x".to_string(), 1.0);
-    defaults.insert("y".to_string(), 1.0);
-    defaults.insert("z".to_string(), 1.0);
-    defaults.insert("sigma".to_string(), sigma);
-    defaults.insert("rho".to_string(), rho);
-    defaults.insert("beta".to_string(), beta);
+    let defaults = vec![
+        ("x".to_string(), 1.0),
+        ("y".to_string(), 1.0),
+        ("z".to_string(), 1.0),
+        ("sigma".to_string(), sigma),
+        ("rho".to_string(), rho),
+        ("beta".to_string(), beta),
+    ];
 
     // Constructing the Lorenz ODESystem
     let lorenz_sys = ODESystem {
@@ -172,6 +201,10 @@ fn main() {
         defaults: defaults,
         tspan: (0.0, 100.0), // As an example, can be adjusted
     };
+
+    let (y0_vec, p_vec) = extract_initial_conditions_and_parameters(&lorenz_sys);
+    let y0: [f64; 3] = [y0_vec[0], y0_vec[1], y0_vec[2]]; // As an example for size 3
+    let p: [f64; 3] = [p_vec[0], p_vec[1], p_vec[2]]; // As an example for size 3
 
     println!("{:?}", lorenz_sys);
 
@@ -195,9 +228,6 @@ fn main() {
             lib.get(b"my_ode_function").expect("Function not found");
         // Here you'd call the function with appropriate arguments
 
-        let y0 = [1.0, 1.0, 1.0];
-        let p = [10.0, 28.0, 8.0 / 3.0];
-
         //initialize the solver
         let mut solver = SolverNoSensi::new(
             LinearMultistepMethod::Adams,
@@ -213,12 +243,87 @@ fn main() {
         )
         .unwrap();
 
-        let ts: Vec<_> = (1..1000).collect();
+        let ts = ndarray::Array::linspace(1.0, 10.0, 10000);
         println!("0,{:?}", y0);
         for &t in &ts {
             let step = solver.step(t as _, StepKind::Normal).unwrap();
-            // let (_tret, &[x, xdot, z]) = 
+            // let (_tret, &[x, xdot, z]) =
             println!("{},{:?}", step.0, step.1);
+        }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ndarray;
+
+    #[test]
+    fn test_simple_ode_system() {
+        let p_val = Ex::Par("p".to_string());
+        let x_var = Ex::Var("x".to_string());
+
+        let dx_dt_simple = ODE {
+            variable: "x".to_string(),
+            expression: Ex::Mul(
+                Box::new(Ex::Const(-1.)),
+                Box::new(Ex::Mul(Box::new(p_val.clone()), Box::new(x_var.clone()))),
+            ),
+        };
+
+        let p_param = 2.0;
+
+        // Default values and parameters for the new system
+        let defaults_simple = vec![("x".to_string(), 1.0), ("p".to_string(), p_param)];
+
+        // Constructing the simple ODESystem
+        let simple_sys = ODESystem {
+            odes: vec![dx_dt_simple],
+            defaults: defaults_simple,
+            tspan: (0.0, 100.0), // As an example, can be adjusted
+        };
+
+        let (y0_vec, p_vec) = extract_initial_conditions_and_parameters(&simple_sys);
+        let y0: [f64; 1] = [y0_vec[0]]; // As an example for size 1
+        let p: [f64; 1] = [p_vec[0]]; // As an example for size 1
+
+        let code = generate_function_from_system(&simple_sys);
+        fs::write("generated_code_simple.rs", code).expect("Unable to write file");
+
+        // Compile the generated code into a shared library
+        Command::new("rustc")
+            .arg("--crate-type=cdylib")
+            .arg("generated_code_simple.rs")
+            .status()
+            .expect("Failed to compile");
+
+        // Load the shared library and use it for simulation
+        unsafe {
+            let lib =
+                Library::new("libgenerated_code_simple.dylib").expect("Failed to load the library");
+            let func: Symbol<extern "C" fn(f64, &[f64; 1], &mut [f64; 1], &[f64; 1]) -> i32> =
+                lib.get(b"my_ode_function").expect("Function not found");
+
+            //initialize the solver
+            let mut solver = SolverNoSensi::new(
+                LinearMultistepMethod::Adams,
+                |t, y, ydot, k| {
+                    func(t, y.into(), ydot.into(), k);
+                    RhsResult::Ok
+                },
+                0.0,
+                &y0,
+                1e-6,
+                AbsTolerance::scalar(1e-6),
+                p,
+            )
+            .unwrap();
+
+            let ts = ndarray::Array::linspace(1.0, 10.0, 100);
+            println!("0,{:?}", y0);
+            for &t in &ts {
+                let step = solver.step(t as _, StepKind::Normal).unwrap();
+                println!("{},{:?}", step.0, step.1);
+            }
         }
     }
 }
