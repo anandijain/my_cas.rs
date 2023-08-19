@@ -255,7 +255,11 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ndarray;
+    use csv::ReaderBuilder;
+    use csv::WriterBuilder;
+    use libloading::{Library, Symbol};
+    use std::fs;
+    use std::process::Command;
 
     #[test]
     fn test_simple_ode_system() {
@@ -271,59 +275,118 @@ mod tests {
         };
 
         let p_param = 2.0;
-
-        // Default values and parameters for the new system
         let defaults_simple = vec![("x".to_string(), 1.0), ("p".to_string(), p_param)];
 
-        // Constructing the simple ODESystem
         let simple_sys = ODESystem {
             odes: vec![dx_dt_simple],
             defaults: defaults_simple,
-            tspan: (0.0, 100.0), // As an example, can be adjusted
+            tspan: (0.0, 10.0),
         };
 
         let (y0_vec, p_vec) = extract_initial_conditions_and_parameters(&simple_sys);
-        let y0: [f64; 1] = [y0_vec[0]]; // As an example for size 1
-        let p: [f64; 1] = [p_vec[0]]; // As an example for size 1
+        let y0: [f64; 1] = [y0_vec[0]];
+        let p: [f64; 1] = [p_vec[0]];
 
         let code = generate_function_from_system(&simple_sys);
         fs::write("generated_code_simple.rs", code).expect("Unable to write file");
 
-        // Compile the generated code into a shared library
         Command::new("rustc")
             .arg("--crate-type=cdylib")
             .arg("generated_code_simple.rs")
             .status()
             .expect("Failed to compile");
 
-        // Load the shared library and use it for simulation
+        let mut results = Vec::new();
+
         unsafe {
             let lib =
                 Library::new("libgenerated_code_simple.dylib").expect("Failed to load the library");
             let func: Symbol<extern "C" fn(f64, &[f64; 1], &mut [f64; 1], &[f64; 1]) -> i32> =
                 lib.get(b"my_ode_function").expect("Function not found");
 
-            //initialize the solver
             let mut solver = SolverNoSensi::new(
-                LinearMultistepMethod::Adams,
+                LinearMultistepMethod::Bdf,
                 |t, y, ydot, k| {
                     func(t, y.into(), ydot.into(), k);
                     RhsResult::Ok
                 },
-                0.0,
+                0.,
                 &y0,
-                1e-6,
-                AbsTolerance::scalar(1e-6),
+                1e-8,
+                AbsTolerance::scalar(1e-8),
                 p,
             )
             .unwrap();
 
-            let ts = ndarray::Array::linspace(1.0, 10.0, 100);
-            println!("0,{:?}", y0);
+            let ts = ndarray::Array::linspace(0.0, 10.0, 100);
             for &t in &ts {
                 let step = solver.step(t as _, StepKind::Normal).unwrap();
-                println!("{},{:?}", step.0, step.1);
+                println!("{:?}", step);
+                results.push((step.0, step.1[0]));
             }
+        }
+
+        // Saving results to a CSV
+        let mut wtr = WriterBuilder::new().from_path("rust_simple.csv").unwrap();
+        for &(time, value) in &results {
+            wtr.write_record(&[format!("{}", time), format!("{}", value)])
+                .unwrap();
+        }
+        wtr.flush().unwrap();
+
+        // Reading in the simple.csv and comparing
+        let mut rdr = ReaderBuilder::new().from_path("simple.csv").unwrap();
+        let mut errors = Vec::new();
+
+        for (result, record) in results.iter().zip(rdr.records().skip(1)) {
+            let record = record.expect("a record");
+            let reference_value: f64 = record[1].parse().expect("a float value");
+            let error = (result.1 - reference_value).abs();
+            errors.push(error);
+        }
+
+        // Printing out the errors
+        for error in errors {
+            println!("Error: {}", error);
+        }
+    }
+
+    #[test]
+    fn test_time_columns_match() {
+        use std::error::Error;
+
+        // Read the time column from the Julia CSV
+        let mut rdr = csv::Reader::from_path("simple.csv").unwrap();
+        let mut julia_times: Vec<f64> = Vec::new();
+        for result in rdr.records() {
+            let record = result.unwrap();
+            julia_times.push(record[0].parse::<f64>().unwrap());
+        }
+
+        // Read the time column from the Rust CSV
+        let mut rdr = csv::Reader::from_path("rust_simple.csv").unwrap();
+        let mut rust_times: Vec<f64> = Vec::new();
+        for result in rdr.records() {
+            let record = result.unwrap();
+            rust_times.push(record[0].parse::<f64>().unwrap());
+        }
+
+        // Ensure the vectors are the same length
+        assert_eq!(
+            julia_times.len(),
+            rust_times.len(),
+            "The time columns have different lengths!"
+        );
+
+        // Check if every entry in the time column is the same
+        for (i, (jt, rt)) in julia_times.iter().zip(rust_times.iter()).enumerate() {
+            assert!(
+                (jt - rt).abs() < 1e-6,
+                "Mismatch at index {}: Julia time is {}, Rust time is {}",
+                i,
+                jt,
+                rt
+            );
         }
     }
 }

@@ -13,3 +13,6 @@ libloading = "0.8.0"
 ndarray = "0.15.6"
 num-traits = "0.2.16"
 sundials-sys = "0.2.5"
+
+[dev-dependencies]
+csv = "1.2.2"
