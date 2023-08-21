@@ -11,41 +11,17 @@ use serde::{Deserialize, Serialize};
 
 type Node = String;
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub enum Ex {
     Const(f64),
     Var(String), // E.g., "x", "y" - usually for variables
     Par(String), // E.g., "a", "b" - for parameters
     BinaryOp(BinOpType, Box<Ex>, Box<Ex>),
     UnaryOp(UnaryOpType, Box<Ex>),
-    Der(Box<Ex>), // Represents differentiation wrt time
+    Der(Box<Ex>, usize), // Represents differentiation wrt time with order 
 }
 
 impl Ex {
-    pub fn constant(val: f64) -> Self {
-        Ex::Const(val)
-    }
-
-    pub fn var(name: &str) -> Self {
-        Ex::Var(name.to_string())
-    }
-
-    pub fn par(name: &str) -> Self {
-        Ex::Par(name.to_string())
-    }
-
-    pub fn binop(op: BinOpType, lhs: Ex, rhs: Ex) -> Self {
-        Ex::BinaryOp(op, Box::new(lhs), Box::new(rhs))
-    }
-
-    pub fn unop(op: UnaryOpType, operand: Ex) -> Self {
-        Ex::UnaryOp(op, Box::new(operand))
-    }
-
-    pub fn der(expr: Ex) -> Self {
-        Ex::Der(Box::new(expr))
-    }
-
     pub fn differential_index(&self) -> usize {
         match self {
             Ex::Const(_) | Ex::Var(_) | Ex::Par(_) => 0,
@@ -53,12 +29,40 @@ impl Ex {
                 std::cmp::max(left.differential_index(), right.differential_index())
             }
             Ex::UnaryOp(_, operand) => operand.differential_index(),
-            Ex::Der(operand) => 1 + operand.differential_index(),
+            Ex::Der(operand, n) => n + operand.differential_index(),
         }
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+pub fn c(val: f64) -> Ex {
+    Ex::Const(val)
+}
+
+pub fn var(name: &str) -> Ex {
+    Ex::Var(name.to_string())
+}
+
+pub fn par(name: &str) -> Ex {
+    Ex::Par(name.to_string())
+}
+
+pub fn binop(op: BinOpType, lhs: Ex, rhs: Ex) -> Ex {
+    Ex::BinaryOp(op, Box::new(lhs), Box::new(rhs))
+}
+
+pub fn unop(op: UnaryOpType, operand: Ex) -> Ex {
+    Ex::UnaryOp(op, Box::new(operand))
+}
+
+pub fn der(expr: Ex, n: usize) -> Ex {
+    Ex::Der(Box::new(expr), n)
+}
+
+pub fn pow(ex: Ex, exponent: f64) -> Ex {
+    Ex::BinaryOp(BinOpType::Pow, Box::new(ex), Box::new(c(exponent)))
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub enum BinOpType {
     Add,
     Sub,
@@ -71,7 +75,7 @@ pub enum BinOpType {
     Min, // Minimum of two numbers
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub enum UnaryOpType {
     Sin,
     Cos,
@@ -90,6 +94,26 @@ pub enum UnaryOpType {
     Floor, // Floor function
     Neg,   // Negation
     Fact,  // Factorial
+}
+
+macro_rules! define_op_overloads {
+    ($($trait:ident, $method:ident, $op:path);* $(;)?) => {
+        $(
+            impl std::ops::$trait for Ex {
+                type Output = Ex;
+
+                fn $method(self, rhs: Ex) -> Ex {
+                    binop($op, self, rhs)
+                }
+            }
+        )*
+    }
+}
+// std::ops::
+define_op_overloads! {
+    Mul, mul, BinOpType::Mul;
+    Add, add, BinOpType::Add;
+    Sub, sub, BinOpType::Sub;
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -150,7 +174,7 @@ pub fn extract_variables(expr: &Ex, variables: &mut HashSet<String>) {
             extract_variables(left, variables);
             extract_variables(right, variables);
         }
-        Der(inner) => {
+        Der(inner, _) => {
             extract_variables(inner, variables);
         }
         _ => {}
