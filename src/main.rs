@@ -5,12 +5,14 @@ extern crate rand;
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::fs;
+use std::future::pending;
 use std::process::Command;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use fixedbitset::FixedBitSet;
 use ndarray::Array2;
+use petgraph::Undirected;
 use petgraph::dot::{Config, Dot};
 use petgraph::visit::GetAdjacencyMatrix;
 use petgraph::{graph::UnGraph, Graph};
@@ -24,6 +26,7 @@ use sundials_sys::*;
 
 use crate::BinOpType::*;
 // use crate::*;
+use my_cas::Ex::*;
 use my_cas::*;
 
 pub fn pend_sys() -> System {
@@ -45,67 +48,114 @@ pub fn pend_sys() -> System {
     sys
 }
 
-pub fn ode_order_lowering(expr: Ex, equations: &mut Vec<Ex>) -> Ex {
+pub fn order_1_pend_sys() -> System {
+    let x = var("x");
+    let y = var("y");
+    let T = var("T");
+    let x_t = var("x_t");
+    let y_t = var("y_t");
+    let r = par("r");
+    let g = par("g");
+
+    let eqs = vec![
+        der(x.clone(), 1) - x_t.clone(),
+        der(y.clone(), 1) - y_t.clone(),
+        der(x_t.clone(), 1) - T.clone() * x.clone(),
+        der(y_t.clone(), 1) - (T.clone() * y.clone() - g.clone()),
+        pow(x.clone(), 2.0) + pow(y.clone(), 2.0) - pow(r, 2.0),
+    ];
+    System {
+        equations: eqs,
+        defaults: vec![],
+        tspan: (0.0, 1.0),
+    }
+}
+
+pub fn extract_diff_variables(expr: &Ex, variables: &mut HashSet<Ex>) {
     match expr {
-        Ex::Der(inner, order) => {
-            if order > 1 {
-                let base_var = match &*inner {
-                    Ex::Var(v) => v.clone(),
-                    _ => panic!("Expected a variable!"),
-                };
+        Ex::Var(name) => {
+            variables.insert(Ex::Var(name.clone()));
+        }
+        Ex::Der(inner, _) => {
+            variables.insert(expr.clone());
+            extract_diff_variables(inner, variables);
+        }
+        Ex::BinaryOp(_, left, right) => {
+            extract_diff_variables(left, variables);
+            extract_diff_variables(right, variables);
+        }
+        _ => {}
+    }
+}
 
-                let mut prev_var = base_var.clone();
-                for _ in 1..order {
-                    let aux_var = format!("{}_t", prev_var);
-                    let diff_equation = binop(
-                        BinOpType::Sub,
-                        Ex::Der(Box::new(Ex::Var(prev_var.clone())), 1),
-                        Ex::Var(aux_var.clone()),
-                    );
-                    equations.push(diff_equation);
-                    prev_var = aux_var;
+pub fn extract_diff_vars_system(system: &System) -> HashSet<Ex> {
+    let mut variables = HashSet::new();
+    for equation in &system.equations {
+        extract_diff_variables(equation, &mut variables);
+    }
+    variables
+}
+
+fn extract_var_from_derivative(ex: &Ex) -> Option<&str> {
+    if let Ex::Der(boxed_ex, _) = ex {
+        if let Ex::Var(name) = &**boxed_ex {
+            return Some(name);
+        }
+    }
+    None
+}
+
+fn create_association_list(dvars_vec: &[Ex]) -> Vec<usize> {
+    let mut association_list = vec![];
+
+    for ex in dvars_vec.iter() {
+        match ex {
+            Ex::Var(name) => {
+                if let Some(index) = dvars_vec
+                    .iter()
+                    .position(|other_ex| extract_var_from_derivative(other_ex) == Some(name))
+                {
+                    association_list.push(index);
+                } else {
+                    association_list.push(0);
                 }
-
-                return Ex::Var(prev_var);
-            } else {
-                Ex::Der(Box::new(ode_order_lowering(*inner, equations)), 1)
+            }
+            _ => {
+                association_list.push(0);
             }
         }
-        Ex::BinaryOp(op, left, right) => {
-            let lowered_left = ode_order_lowering(*left, equations);
-            let lowered_right = ode_order_lowering(*right, equations);
-            Ex::BinaryOp(op, Box::new(lowered_left), Box::new(lowered_right))
-        }
-        Ex::UnaryOp(op, operand) => {
-            let lowered_operand = ode_order_lowering(*operand, equations);
-            Ex::UnaryOp(op, Box::new(lowered_operand))
-        }
-        _ => expr,
-    }
-}
-
-pub fn lower_equations(equations: Vec<Ex>) -> Vec<Ex> {
-    let mut lowered_equations = equations.clone();
-
-    for equation in equations.iter() {
-        let lowered_equation = ode_order_lowering(equation.clone(), &mut lowered_equations);
-        if let Some(index) = lowered_equations.iter().position(|x| *x == *equation) {
-            lowered_equations[index] = lowered_equation;
-        } else {
-            lowered_equations.push(lowered_equation);
-        }
     }
 
-    lowered_equations
+    association_list
 }
 
-pub fn lower_system(system: System) -> System {
-    System {
-        equations: lower_equations(system.equations),
-        defaults: system.defaults,
-        tspan: system.tspan,
-    }
-}
+// todo!();
+// fn detect_subsets_to_be_differentiated(
+//     initial_num_equations: usize,        // N
+//     num_variables: usize,                // M
+//     bipartite_graph: &Graph<String, (), Undirected>,    // Assumed type, you can replace with the actual type
+//     variable_association_list: &[usize], // A
+// ) {
+//     // Step 1: Initialization
+//     let mut assign = vec![0; num_variables]; // ASSIGN(j) = 0 for j = 1(1)M
+//     let mut b = vec![0; initial_num_equations]; // B(i) = 0 for i = 1(1)N
+
+//     // Step 2: Set N' = N
+//     let mut n_prime = initial_num_equations;
+
+//     // Step 3: Loop over N'
+//     for k in 1..=n_prime {
+//         // Step 3a: Set i = k
+//         let i = k;
+
+//         // Step 3b: Repeat (TODO: Implement the repeat logic)
+//         // This is typically a while loop, but you need more specifics on the exit condition.
+//         while true {
+//             // TODO: Implement the inside of the repeat loop.
+//         }
+//     }
+//     // TODO: Complete the rest of the algorithm
+// }
 
 fn main() {
     let sys = pend_sys();
@@ -124,50 +174,31 @@ fn main() {
     let diff_idxs = sys.differential_indices();
     println!("{:?}", diff_idxs);
 
-    let sys = pend_sys();
-    let lowered_sys = lower_system(sys);
+    let sys = order_1_pend_sys();
+    sys.equations
+        .iter()
+        .for_each(|x| println!("{}", x.pretty_print()));
+    let g = build_bipartite_graph(&sys);
+    println!("sys \n{:?}", Dot::with_config(&g, &[Config::EdgeNoLabel]));
 
-    for equation in lowered_sys.equations {
-        println!("{:?}", equation);
-    }
+    let pend_vars = extract_variables_system(&sys);
+    println!("{:?}", pend_vars);
 
-    let ex = der(var("x"), 3) - c(1.0);
-    println!("{:?}", ex);
-    let exs = lower_equations(vec![ex]);
-    println!("{:?}", exs);
-}
+    let pend_dvars = extract_diff_vars_system(&sys);
+    let mut dvars_vec: Vec<_> = pend_dvars.into_iter().collect();
+    dvars_vec.sort();
+    dvars_vec
+        .iter()
+        .for_each(|x| println!("{}", x.pretty_print()));
+    let vd = create_association_list(&dvars_vec);
+    println!("vd:{:?}", vd);
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+    // vec![1,1,3].dedup();
+    let e_nodes = vec![0, 3, 6, 8, 9];
+    let v_nodes = g
+        .node_indices()
+        .filter(|x| !e_nodes.contains(&x.index()))
+        .collect::<Vec<_>>();
 
-    #[test]
-    fn test_lower_system() {
-        let sys = pend_sys();
-        let lowered_sys = lower_system(sys);
-
-        let expected_eqs = vec![
-            binop(Sub, binop(Mul, var("T"), var("x")), var("x_t")),
-            binop(
-                Sub,
-                binop(Sub, binop(Mul, var("T"), var("y")), par("g")),
-                var("y_t"),
-            ),
-            binop(
-                Sub,
-                binop(
-                    Add,
-                    binop(Pow, var("x"), c(2.0)),
-                    binop(Pow, var("y"), c(2.0)),
-                ),
-                binop(Pow, par("r"), c(2.0)),
-            ),
-            binop(Sub, Ex::Der(Box::new(var("x")), 1), var("x_t")),
-            binop(Sub, Ex::Der(Box::new(var("y")), 1), var("y_t")),
-        ];
-
-        for (given, expected) in lowered_sys.equations.iter().zip(expected_eqs.iter()) {
-            assert_eq!(given, expected);
-        }
-    }
+    println!("{:?}", v_nodes);
 }

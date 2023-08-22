@@ -51,13 +51,21 @@ similarly for 4:6
 a (maximum) matching of g would be edges {(1, 4) (2, 6) (3, 5)}
 so technically a matching is {} (no edges?)
 
-ode_order_lowering(ex: Ex) -> Vec<Ex> ?
-ie find all higher order 
 
-ex1 = der(der(x)) - Tx
-ode_order_owering(ex1) ->
+order lowering walkthrou
 
-vec![
-der(x) - d_x, 
-der(d_x) - Tx,
-]
+sys:
+1) Tx - der(x, 2)
+2) Ty - g - der(y, 2)
+3) x^2 + y^2 - L^2 
+
+-> 
+ 
+1) der(x, 1) - w 
+2) der(y, 1) - z 
+3) der(w, 1) - Tx
+4) der(z, 1) - Ty - g
+5) x^2 + y^2 - L^2
+
+X = [x, y, w, z, der(x), der(y), der(w), der(z), T]
+A = [5, 6, 7, 8, 0,      0,      0,      0,      0]

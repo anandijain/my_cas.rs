@@ -152,3 +152,92 @@
 //         println!("{}", transformed_sys.equations.len());
 //     }
 // }
+
+
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+
+//     #[test]
+//     fn test_lower_system() {
+//         let sys = pend_sys();
+//         let lowered_sys = lower_system(sys);
+
+//         for (given, expected) in lowered_sys.equations.iter().zip(expected_eqs.iter()) {
+//             assert_eq!(given, expected);
+//         }
+//     }
+// }
+// pub fn ode_order_lowering(expr: Ex, equations: &mut Vec<Ex>) -> Ex {
+//     match expr {
+//         Ex::Der(inner, order) => {
+//             if order > 1 {
+//                 let base_var = match &*inner {
+//                     Ex::Var(v) => v.clone(),
+//                     _ => panic!("Expected a variable!"),
+//                 };
+
+//                 let mut prev_var = base_var.clone();
+//                 for _ in 1..order {
+//                     let aux_var = format!("{}_t", prev_var);
+//                     let diff_equation = binop(
+//                         BinOpType::Sub,
+//                         Ex::Der(Box::new(Ex::Var(prev_var.clone())), 1),
+//                         Ex::Var(aux_var.clone()),
+//                     );
+//                     equations.push(diff_equation);
+//                     prev_var = aux_var;
+//                 }
+
+//                 // After the loop, generate a differential equation for the last auxiliary variable
+//                 let diff_equation = binop(
+//                     BinOpType::Sub,
+//                     Ex::Der(Box::new(Ex::Var(prev_var.clone())), 1),
+//                     Ex::Var(format!("{}_t", prev_var)),
+//                 );
+//                 equations.push(diff_equation);
+
+//                 return Ex::Var(prev_var);
+//             } else {
+//                 // For first-order derivatives, replace with corresponding auxiliary variable
+//                 match &*inner {
+//                     Ex::Var(v) => Ex::Var(format!("{}_t", v)),
+//                     _ => panic!("Expected a variable!"),
+//                 }
+//             }
+//         }
+//         Ex::BinaryOp(op, left, right) => {
+//             let lowered_left = ode_order_lowering(*left, equations);
+//             let lowered_right = ode_order_lowering(*right, equations);
+//             Ex::BinaryOp(op, Box::new(lowered_left), Box::new(lowered_right))
+//         }
+//         Ex::UnaryOp(op, operand) => {
+//             let lowered_operand = ode_order_lowering(*operand, equations);
+//             Ex::UnaryOp(op, Box::new(lowered_operand))
+//         }
+//         _ => expr,
+//     }
+// }
+
+// pub fn lower_equations(equations: Vec<Ex>) -> Vec<Ex> {
+//     let mut lowered_equations = equations.clone();
+
+//     for equation in equations.iter() {
+//         let lowered_equation = ode_order_lowering(equation.clone(), &mut lowered_equations);
+//         if let Some(index) = lowered_equations.iter().position(|x| *x == *equation) {
+//             lowered_equations[index] = lowered_equation;
+//         } else {
+//             lowered_equations.push(lowered_equation);
+//         }
+//     }
+
+//     lowered_equations
+// }
+
+// pub fn lower_system(system: System) -> System {
+//     System {
+//         equations: lower_equations(system.equations),
+//         defaults: system.defaults,
+//         tspan: system.tspan,
+//     }
+// }

@@ -1,9 +1,12 @@
 use std::collections::HashSet;
+use std::fmt;
 
 use crate::BinOpType::*;
 use crate::Ex::*;
+use colored::*;
 use fixedbitset::FixedBitSet;
 use ndarray::Array2;
+use ordered_float::NotNan;
 use petgraph::dot::{Config, Dot};
 use petgraph::visit::GetAdjacencyMatrix;
 use petgraph::{graph::UnGraph, Graph};
@@ -11,14 +14,14 @@ use serde::{Deserialize, Serialize};
 
 type Node = String;
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Ex {
-    Const(f64),
+    Const(NotNan<f64>),
     Var(String), // E.g., "x", "y" - usually for variables
     Par(String), // E.g., "a", "b" - for parameters
     BinaryOp(BinOpType, Box<Ex>, Box<Ex>),
     UnaryOp(UnaryOpType, Box<Ex>),
-    Der(Box<Ex>, usize), // Represents differentiation wrt time with order 
+    Der(Box<Ex>, usize), // Represents differentiation wrt time with order
 }
 
 impl Ex {
@@ -32,10 +35,39 @@ impl Ex {
             Ex::Der(operand, n) => n + operand.differential_index(),
         }
     }
+
+    pub fn pretty_print(&self) -> String {
+        match self {
+            Ex::Const(val) => format!("{}", val).cyan().to_string(), // Colored cyan
+            Ex::Var(name) => format!("{}", name).green().to_string(), // Colored green
+            Ex::Par(name) => format!("{}", name).blue().to_string(), // Colored blue
+            Ex::BinaryOp(op, left, right) => {
+                let l = left.pretty_print();
+                let r = right.pretty_print();
+                format!("({} {} {})", l, op, r)
+            }
+            Ex::UnaryOp(op, operand) => {
+                let op_str = operand.pretty_print();
+                match op {
+                    UnaryOpType::Sin => format!("sin({})", op_str),
+                    // ... Add other unary operations as needed
+                    _ => format!("{}({})", op, op_str), // Placeholder
+                }
+            }
+            Ex::Der(operand, n) => {
+                let op_str = operand.pretty_print();
+                if *n == 1 {
+                    format!("der({})", op_str)
+                } else {
+                    format!("der({}, {})", op_str, n)
+                }
+            }
+        }
+    }
 }
 
 pub fn c(val: f64) -> Ex {
-    Ex::Const(val)
+    Ex::Const(NotNan::new(val).unwrap())
 }
 
 pub fn var(name: &str) -> Ex {
@@ -58,11 +90,12 @@ pub fn der(expr: Ex, n: usize) -> Ex {
     Ex::Der(Box::new(expr), n)
 }
 
+// i dont like
 pub fn pow(ex: Ex, exponent: f64) -> Ex {
     Ex::BinaryOp(BinOpType::Pow, Box::new(ex), Box::new(c(exponent)))
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum BinOpType {
     Add,
     Sub,
@@ -75,7 +108,7 @@ pub enum BinOpType {
     Min, // Minimum of two numbers
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum UnaryOpType {
     Sin,
     Cos,
@@ -109,6 +142,32 @@ macro_rules! define_op_overloads {
         )*
     }
 }
+
+impl fmt::Display for BinOpType {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            BinOpType::Add => write!(f, "+"),
+            BinOpType::Sub => write!(f, "-"),
+            BinOpType::Mul => write!(f, "*"),
+            BinOpType::Div => write!(f, "/"),
+            BinOpType::Pow => write!(f, "^"),
+            // ... Add other binary operations as needed
+            _ => write!(f, "?"), // Placeholder for unhandled operations
+        }
+    }
+}
+
+impl fmt::Display for UnaryOpType {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            UnaryOpType::Sin => write!(f, "sin"),
+            UnaryOpType::Cos => write!(f, "cos"),
+            // ... Add other unary operations as needed
+            _ => write!(f, "?"), // Placeholder for unhandled operations
+        }
+    }
+}
+
 // std::ops::
 define_op_overloads! {
     Mul, mul, BinOpType::Mul;
@@ -179,6 +238,16 @@ pub fn extract_variables(expr: &Ex, variables: &mut HashSet<String>) {
         }
         _ => {}
     }
+}
+
+pub fn extract_variables_system(system: &System) -> HashSet<String> {
+    let mut variables = HashSet::new();
+
+    for equation in &system.equations {
+        extract_variables(equation, &mut variables);
+    }
+
+    variables
 }
 
 pub fn convert_to_ndarray(fbs: &FixedBitSet, n: usize) -> Array2<bool> {
