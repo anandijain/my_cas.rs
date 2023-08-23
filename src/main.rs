@@ -100,10 +100,10 @@ fn augment_path(
 
     // (2) Check V-nodes
     for &j in v_nodes.iter() {
-        println!("j: {:?}", j);
         if graph.contains_edge(i.into(), j.into()) && assign.get(&j) == None {
             // (2a) Set PATHFOUND TRUE
             *path_found = true;
+            println!("path found");
             // (2b) Set ASSIGN (j) to i (assuming this is the correct assignment)
             assign.insert(j, i);
             // (2c) Return
@@ -162,6 +162,8 @@ fn detect_subsets_to_be_differentiated(
         // Step 3b: Repeat (TODO: Implement the repeat logic)
         // This is typically a while loop, but you need more specifics on the exit condition.
         loop {
+            println!("{:?}", Dot::with_config(&*g, &[Config::EdgeNoLabel]));
+
             // this might need to also modify num variables
             three_b_1(g, &*var_diff_map, v_nodes); // MODIFIES GRAPH.
                                                    // num_variables = v_nodes.len();
@@ -198,15 +200,16 @@ fn detect_subsets_to_be_differentiated(
                     num_equations += 1;
                     // Create new E-node N
 
-                    let new_enode = g.add_node(Var("TODO".to_owned())); // node weight needs to be the diff'd eq
+                    // node weight needs to be the diff'd eq
+                    let new_enode = g.add_node(Var("TODO".to_owned()));
 
                     // Create edges from E-node N to all V-nodes j and A(j) such that edge (l-j) exists.
-                    // let es = g.edges(*enode).;
                     let ns = g.neighbors(*enode).into_iter().collect::<Vec<_>>();
-                    for n_ in ns { // these are the `j`s 
+                    for n_ in ns {
+                        // these are the `j`s
                         assert!(g.contains_edge(*enode, n_));
-                        let e_ = g.find_edge(*enode, n_).unwrap();
-                        
+                        // let e_ = g.find_edge(*enode, n_).unwrap();
+
                         g.add_edge(new_enode, n_, ());
                         g.add_edge(new_enode, *var_diff_map.get(&n_).unwrap(), ());
                     }
@@ -308,7 +311,7 @@ fn main() {
     println!("nv:{:?}, ne:{:?}", g.node_count(), g.edge_count());
     println!("v_nodes:{:?} \ne_nodes:{:?}", v_nodes, e_nodes);
 
-    let a = build_a(&g, &v_nodes);
+    let mut a = build_a(&g, &v_nodes);
     println!("A = {:?}", a);
     for (k, v) in &a {
         // println!("k: {:?}, v: {:?}", k, v);
@@ -321,7 +324,17 @@ fn main() {
     let mut v_nodes2 = v_nodes.clone();
 
     three_b_1(&mut g2, &a, &mut v_nodes2);
-    println!("{:?}", Dot::with_config(&g2, &[Config::EdgeNoLabel]));
+    println!("three_b_1:{:?}", Dot::with_config(&g2, &[Config::EdgeNoLabel]));
+    println!("\n");
+    let mut g3 = g.clone();
+    detect_subsets_to_be_differentiated(
+        e_nodes.len(),
+        v_nodes.len(),
+        &mut g3,
+        &mut a,
+        &mut v_nodes,
+        &mut e_nodes,
+    )
 }
 
 fn stable_graph_example() {
