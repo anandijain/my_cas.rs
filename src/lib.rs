@@ -1,3 +1,5 @@
+#![feature(is_sorted)]
+
 use std::collections::HashSet;
 use std::fmt;
 
@@ -7,20 +9,22 @@ use colored::*;
 use fixedbitset::FixedBitSet;
 use ndarray::Array2;
 use ordered_float::NotNan;
+use petgraph::Undirected;
 use petgraph::dot::{Config, Dot};
+use petgraph::stable_graph::NodeIndex;
+use petgraph::stable_graph::StableGraph;
+use petgraph::stable_graph::StableUnGraph;
 use petgraph::visit::GetAdjacencyMatrix;
 use petgraph::{graph::UnGraph, Graph};
 use serde::{Deserialize, Serialize};
-
-type Node = String;
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Ex {
     Const(NotNan<f64>),
     Var(String), // E.g., "x", "y" - usually for variables
     Par(String), // E.g., "a", "b" - for parameters
-    BinaryOp(BinOpType, Box<Ex>, Box<Ex>),
-    UnaryOp(UnaryOpType, Box<Ex>),
+    BinOp(BinOpType, Box<Ex>, Box<Ex>),
+    UnOp(UnOpType, Box<Ex>),
     Der(Box<Ex>, usize), // Represents differentiation wrt time with order
 }
 
@@ -28,10 +32,10 @@ impl Ex {
     pub fn differential_index(&self) -> usize {
         match self {
             Ex::Const(_) | Ex::Var(_) | Ex::Par(_) => 0,
-            Ex::BinaryOp(_, left, right) => {
+            Ex::BinOp(_, left, right) => {
                 std::cmp::max(left.differential_index(), right.differential_index())
             }
-            Ex::UnaryOp(_, operand) => operand.differential_index(),
+            Ex::UnOp(_, operand) => operand.differential_index(),
             Ex::Der(operand, n) => n + operand.differential_index(),
         }
     }
@@ -41,15 +45,15 @@ impl Ex {
             Ex::Const(val) => format!("{}", val).cyan().to_string(), // Colored cyan
             Ex::Var(name) => format!("{}", name).green().to_string(), // Colored green
             Ex::Par(name) => format!("{}", name).blue().to_string(), // Colored blue
-            Ex::BinaryOp(op, left, right) => {
+            Ex::BinOp(op, left, right) => {
                 let l = left.pretty_print();
                 let r = right.pretty_print();
                 format!("({} {} {})", l, op, r)
             }
-            Ex::UnaryOp(op, operand) => {
+            Ex::UnOp(op, operand) => {
                 let op_str = operand.pretty_print();
                 match op {
-                    UnaryOpType::Sin => format!("sin({})", op_str),
+                    UnOpType::Sin => format!("sin({})", op_str),
                     // ... Add other unary operations as needed
                     _ => format!("{}({})", op, op_str), // Placeholder
                 }
@@ -79,11 +83,11 @@ pub fn par(name: &str) -> Ex {
 }
 
 pub fn binop(op: BinOpType, lhs: Ex, rhs: Ex) -> Ex {
-    Ex::BinaryOp(op, Box::new(lhs), Box::new(rhs))
+    Ex::BinOp(op, Box::new(lhs), Box::new(rhs))
 }
 
-pub fn unop(op: UnaryOpType, operand: Ex) -> Ex {
-    Ex::UnaryOp(op, Box::new(operand))
+pub fn unop(op: UnOpType, operand: Ex) -> Ex {
+    Ex::UnOp(op, Box::new(operand))
 }
 
 pub fn der(expr: Ex, n: usize) -> Ex {
@@ -92,7 +96,7 @@ pub fn der(expr: Ex, n: usize) -> Ex {
 
 // i dont like
 pub fn pow(ex: Ex, exponent: f64) -> Ex {
-    Ex::BinaryOp(BinOpType::Pow, Box::new(ex), Box::new(c(exponent)))
+    Ex::BinOp(BinOpType::Pow, Box::new(ex), Box::new(c(exponent)))
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -109,7 +113,7 @@ pub enum BinOpType {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum UnaryOpType {
+pub enum UnOpType {
     Sin,
     Cos,
     Tan,
@@ -157,11 +161,11 @@ impl fmt::Display for BinOpType {
     }
 }
 
-impl fmt::Display for UnaryOpType {
+impl fmt::Display for UnOpType {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            UnaryOpType::Sin => write!(f, "sin"),
-            UnaryOpType::Cos => write!(f, "cos"),
+            UnOpType::Sin => write!(f, "sin"),
+            UnOpType::Cos => write!(f, "cos"),
             // ... Add other unary operations as needed
             _ => write!(f, "?"), // Placeholder for unhandled operations
         }
@@ -198,30 +202,76 @@ pub struct Equation {
     pub rhs: Ex,
 }
 
-pub fn build_bipartite_graph(system: &System) -> UnGraph<Node, ()> {
-    let mut graph = UnGraph::<Node, ()>::new_undirected();
+pub fn build_bipartite_graph(system: &System) -> (UnGraph<Ex, ()>, HashSet<NodeIndex>, HashSet<NodeIndex>) {
+    let mut graph = UnGraph::<Ex, ()>::new_undirected();
+    // add all enodes
+    // then get_dvars_list, sort it, then add all vnodes
+    
+
+    let mut v_nodes = HashSet::new();
+    let mut e_nodes = HashSet::new();
 
     // Add equations to the graph as nodes.
     for (index, eq) in system.equations.iter().enumerate() {
-        let eq_node = format!("Eq{}", index + 1);
-        let eq_node_idx = graph.add_node(eq_node);
+        // let eq_node = format!("Eq{}", index + 1);
+        let eq_node_idx = graph.add_node(eq.clone());
+        e_nodes.insert(eq_node_idx);
 
         // Extract variables from the equation.
         let mut variables = HashSet::new();
         extract_variables(&eq, &mut variables);
 
         for var in &variables {
-            let var_node_idx = if let Some(idx) = graph.node_indices().find(|&n| graph[n] == *var) {
+            let var_node_idx = if let Some(idx) = graph.node_indices().find(|&n| graph[n] == Var(var.clone())) {
                 idx
             } else {
-                graph.add_node(var.clone())
+                let vnode_idx = graph.add_node(Var(var.clone()));
+                v_nodes.insert(vnode_idx);
+                vnode_idx
             };
             graph.add_edge(eq_node_idx, var_node_idx, ());
         }
     }
 
-    graph
+    (graph, v_nodes, e_nodes)
 }
+
+pub fn build_bipartite_graph2_electric_boogaloo(system: &System) -> (StableUnGraph<Ex, ()>, HashSet<NodeIndex>, HashSet<NodeIndex>) {
+    
+    // StableUnGraph::with_capacity(u32::MAX, u32::MAX)
+    let mut g: StableUnGraph<Ex, ()>= StableUnGraph::default();
+
+    let mut v_nodes = HashSet::new();
+    let mut e_nodes = HashSet::new();
+
+    let mut dvars_list = extract_diff_vars_system(system).into_iter().collect::<Vec<_>>();
+    dvars_list.sort(); // vnodes
+    let eqs = &system.equations; // e nodes
+    assert!(eqs.is_sorted());
+
+    for (i, eq) in eqs.iter().enumerate() {
+        let eq_node_idx = g.add_node(eq.clone());
+        e_nodes.insert(eq_node_idx);
+    }
+
+    for (i, var) in dvars_list.iter().enumerate() {
+        let var_node_idx = g.add_node(var.clone());
+        v_nodes.insert(var_node_idx);
+    }
+
+    for (i, eq) in eqs.iter().enumerate() {
+        let mut variables = HashSet::new();
+        extract_diff_variables(&eq, &mut variables);
+
+        for var in &variables {
+            let var_node_idx = g.node_indices().find(|&n| g[n] == var.clone()).unwrap();
+            g.add_edge((i as u32).into(), var_node_idx, ());
+        }
+    }
+    
+    (g, v_nodes, e_nodes)
+}
+
 
 // A recursive function to extract variables from an expression.
 pub fn extract_variables(expr: &Ex, variables: &mut HashSet<String>) {
@@ -229,7 +279,10 @@ pub fn extract_variables(expr: &Ex, variables: &mut HashSet<String>) {
         Var(name) => {
             variables.insert(name.clone());
         }
-        BinaryOp(_, left, right) => {
+        UnOp(_, inner) => {
+            extract_variables(inner, variables);
+        }
+        BinOp(_, left, right) => {
             extract_variables(left, variables);
             extract_variables(right, variables);
         }
@@ -263,4 +316,42 @@ pub fn convert_to_ndarray(fbs: &FixedBitSet, n: usize) -> Array2<bool> {
     }
 
     array
+}
+
+pub fn extract_diff_variables(expr: &Ex, variables: &mut HashSet<Ex>) {
+    match expr {
+        Ex::Var(name) => {
+            variables.insert(Ex::Var(name.clone()));
+        }
+        Ex::Der(inner, _) => {
+            variables.insert(expr.clone());
+            // extract_diff_variables(inner, variables);
+        }
+        Ex::UnOp(_, inner) => {
+            variables.insert(expr.clone());
+            extract_diff_variables(inner, variables);
+        }
+        Ex::BinOp(_, left, right) => {
+            extract_diff_variables(left, variables);
+            extract_diff_variables(right, variables);
+        }
+        _ => {}
+    }
+}
+
+pub fn extract_diff_vars_system(system: &System) -> HashSet<Ex> {
+    let mut variables = HashSet::new();
+    for equation in &system.equations {
+        extract_diff_variables(equation, &mut variables);
+    }
+    variables
+}
+
+pub fn extract_var_from_derivative(ex: &Ex) -> Option<&str> {
+    if let Ex::Der(boxed_ex, _) = ex {
+        if let Ex::Var(name) = &**boxed_ex {
+            return Some(name);
+        }
+    }
+    None
 }

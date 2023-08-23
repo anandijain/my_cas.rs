@@ -4,6 +4,17 @@ a basic cas that is used to generate ODE functions used by cvode-wrap/sundials-s
 
 the goal is to add a spice parser to do real-time circuit simulation of audio circuits
 
+first step is to make the pendulum system index reduction with pantelides work
+
+i think it would be good to also implement the structural matrix method 
+https://www.sciencedirect.com/science/article/abs/pii/0098135494000945
+https://pubs.acs.org/doi/10.1021/ie0341754
+
+the best reference on DAE index reduction is probably https://reference.wolfram.com/language/tutorial/NDSolveDAE (as usual wolfram)
+
+it seems after that the dummy derivative method is needed to prevent numerical drift
+https://www.researchgate.net/publication/235324214_Index_Reduction_in_Differential-Algebraic_Equations_Using_Dummy_Derivatives
+
 
 ### notes on pantelides paper 
 #### SDR walkthrough
